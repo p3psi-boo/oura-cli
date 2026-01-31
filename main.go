@@ -50,8 +50,33 @@ type StoredToken struct {
 	ExpiresAt    time.Time `json:"expires_at"`
 }
 
+type Options struct {
+	JSON bool
+	Help bool
+}
+
+type ParsedArgs struct {
+	Command string
+	Args    []string
+	Opts    Options
+}
+
+type EndpointResult struct {
+	Data  json.RawMessage `json:"data,omitempty"`
+	Error string          `json:"error,omitempty"`
+}
+
+type JSONOutput struct {
+	Command   string                    `json:"command"`
+	Date      string                    `json:"date"`
+	StartDate string                    `json:"start_date"`
+	EndDate   string                    `json:"end_date"`
+	Endpoints map[string]EndpointResult `json:"endpoints"`
+}
+
 func main() {
-	if len(os.Args) < 2 {
+	pa, ok := parseArgs(os.Args)
+	if !ok {
 		printUsage()
 		os.Exit(1)
 	}
@@ -61,34 +86,113 @@ func main() {
 		os.Exit(1)
 	}
 
-	cmd := os.Args[1]
-	switch cmd {
+	// Global help routing.
+	if pa.Opts.Help {
+		printHelp(pa.Command, pa.Args)
+		return
+	}
+
+	switch pa.Command {
 	case "auth":
 		doAuth()
+	case "help":
+		printHelp("", pa.Args)
+	case "completion", "completions":
+		handleCompletion(pa.Args)
+	case "personal-info", "personal_info", "personal":
+		handlePersonalInfo(pa.Args, pa.Opts)
+	case "tag":
+		handleTag(pa.Args, pa.Opts)
+	case "enhanced-tag", "enhanced_tag":
+		handleEnhancedTag(pa.Args, pa.Opts)
+	case "session":
+		handleSession(pa.Args, pa.Opts)
+	case "webhook":
+		handleWebhook(pa.Args, pa.Opts)
 	case "today":
-		fetchAll(time.Now().Format("2006-01-02"))
+		date := parseDateArg(pa.Args)
+		if pa.Opts.JSON {
+			fetchAllJSON(date)
+			return
+		}
+		fetchAll(date)
 	case "sleep":
-		fetchSleep(getDateArg())
+		date := parseDateArg(pa.Args)
+		if pa.Opts.JSON {
+			fetchSleepJSON(date)
+			return
+		}
+		fetchSleep(date)
 	case "activity":
-		fetchActivity(getDateArg())
+		date := parseDateArg(pa.Args)
+		if pa.Opts.JSON {
+			fetchActivityJSON(date)
+			return
+		}
+		fetchActivity(date)
 	case "readiness":
-		fetchReadiness(getDateArg())
+		date := parseDateArg(pa.Args)
+		if pa.Opts.JSON {
+			fetchReadinessJSON(date)
+			return
+		}
+		fetchReadiness(date)
 	case "heartrate":
-		fetchHeartRate(getDateArg())
+		date := parseDateArg(pa.Args)
+		if pa.Opts.JSON {
+			fetchHeartRateJSON(date)
+			return
+		}
+		fetchHeartRate(date)
+	case "hrv":
+		date := parseDateArg(pa.Args)
+		if pa.Opts.JSON {
+			fetchHRVJSON(date)
+			return
+		}
+		fetchHRV(date)
 	case "stress":
-		fetchStress(getDateArg())
+		date := parseDateArg(pa.Args)
+		if pa.Opts.JSON {
+			fetchStressJSON(date)
+			return
+		}
+		fetchStress(date)
 	case "spo2":
-		fetchSpO2(getDateArg())
+		date := parseDateArg(pa.Args)
+		if pa.Opts.JSON {
+			fetchSpO2JSON(date)
+			return
+		}
+		fetchSpO2(date)
 	case "resilience":
-		fetchResilience(getDateArg())
+		date := parseDateArg(pa.Args)
+		if pa.Opts.JSON {
+			fetchResilienceJSON(date)
+			return
+		}
+		fetchResilience(date)
 	case "vo2":
-		fetchVO2Max(getDateArg())
+		date := parseDateArg(pa.Args)
+		if pa.Opts.JSON {
+			fetchVO2MaxJSON(date)
+			return
+		}
+		fetchVO2Max(date)
 	case "workout":
-		fetchWorkouts(getDateArg())
+		date := parseDateArg(pa.Args)
+		if pa.Opts.JSON {
+			fetchWorkoutsJSON(date)
+			return
+		}
+		fetchWorkouts(date)
 	case "all":
-		fetchAll(getDateArg())
-	case "json":
-		fetchJSON(getDateArg())
+		date := parseDateArg(pa.Args)
+		if pa.Opts.JSON {
+			fetchAllJSON(date)
+			return
+		}
+		fetchAll(date)
 	default:
 		printUsage()
 		os.Exit(1)
@@ -98,27 +202,87 @@ func main() {
 func printUsage() {
 	fmt.Println(`oura - Oura Ring CLI
 
+Usage:
+  oura <command> [args] [--json|-j]
+	  oura help [command]
+	  oura completion <bash|zsh|fish>
+
 Commands:
   auth              Authenticate with Oura (first time setup)
+  personal-info     Fetch personal info
   today             Show today's summary
   all [date]        Show all metrics for date (default: today)
   sleep [date]      Show sleep data
   activity [date]   Show activity data  
-  readiness [date]  Show readiness data
-  heartrate [date]  Show heart rate data
-  stress [date]     Show daytime stress data
-  spo2 [date]       Show blood oxygen data
-  resilience [date] Show resilience data
-  vo2 [date]        Show VO2 max data
-  workout [date]    Show workouts
-  json [date]       Raw JSON dump of all data
+	  readiness [date]  Show readiness data
+	  heartrate [date]  Show heart rate data
+	  hrv [date]        Show heart rate variability (from sleep)
+	  stress [date]     Show daytime stress data
+	  spo2 [date]       Show blood oxygen data
+	  resilience [date] Show resilience data
+	  vo2 [date]        Show VO2 max data
+	  workout [date]    Show workouts
+  json [date]       Raw JSON dump of all data (alias for: all --json)
+
+  tag               Manage tags
+  enhanced-tag      Manage enhanced tags
+  session           Manage sessions
+
+  webhook           Manage webhook subscriptions
+
+Webhook subcommands:
+  webhook list
+  webhook get <id>
+  webhook create --callback-url <url> --verification-token <token> --event-type <create|update|delete> --data-type <type>
+  webhook update <id> --verification-token <token> [--callback-url <url>] [--event-type <create|update|delete>] [--data-type <type>]
+  webhook delete <id>
+  webhook renew <id>
+  webhook types
+
+Options:
+  --help, -h        Show help for a command
+  --json, -j         Output JSON to stdout (machine readable)
 
 Date format: YYYY-MM-DD (defaults to today)`)
 }
 
-func getDateArg() string {
-	if len(os.Args) > 2 {
-		return os.Args[2]
+func parseArgs(argv []string) (pa ParsedArgs, ok bool) {
+	if len(argv) < 2 {
+		return ParsedArgs{}, false
+	}
+
+	cmd := argv[1]
+	if cmd == "--help" || cmd == "-h" {
+		return ParsedArgs{Command: "help", Opts: Options{Help: true}}, true
+	}
+	args := argv[2:]
+	var opts Options
+
+	// Back-compat: `oura json [date]`.
+	if cmd == "json" {
+		opts.JSON = true
+		cmd = "all"
+	}
+
+	// Parse global flags in a permissive way: allow them anywhere.
+	pos := make([]string, 0, len(args))
+	for _, a := range args {
+		switch a {
+		case "--help", "-h", "help":
+			opts.Help = true
+		case "--json", "-j":
+			opts.JSON = true
+		default:
+			pos = append(pos, a)
+		}
+	}
+
+	return ParsedArgs{Command: cmd, Args: pos, Opts: opts}, true
+}
+
+func parseDateArg(args []string) string {
+	if len(args) > 0 {
+		return args[0]
 	}
 	return time.Now().Format("2006-01-02")
 }
@@ -213,7 +377,8 @@ func doAuth() {
 	authParams.Set("client_id", config.ClientID)
 	authParams.Set("redirect_uri", redirectURI)
 	authParams.Set("response_type", "code")
-	authParams.Set("scope", "daily heartrate personal workout spo2 stress heart_health")
+	// Keep scopes broad enough for all CLI endpoints.
+	authParams.Set("scope", "daily heartrate personal workout spo2 stress heart_health tag session")
 	authParams.Set("state", state)
 
 	fullAuthURL := authURL + "?" + authParams.Encode()
@@ -408,9 +573,9 @@ type ReadinessResponse struct {
 }
 
 type ReadinessRecord struct {
-	Day                       string  `json:"day"`
-	Score                     int     `json:"score"`
-	TemperatureDeviation      float64 `json:"temperature_deviation"`
+	Day                       string   `json:"day"`
+	Score                     int      `json:"score"`
+	TemperatureDeviation      float64  `json:"temperature_deviation"`
 	TemperatureTrendDeviation *float64 `json:"temperature_trend_deviation"`
 	Contributors              struct {
 		ActivityBalance     int  `json:"activity_balance"`
@@ -459,10 +624,10 @@ type StressResponse struct {
 }
 
 type StressRecord struct {
-	Day             string  `json:"day"`
-	StressHigh      int     `json:"stress_high"`
-	RecoveryHigh    int     `json:"recovery_high"`
-	DaytimeStress   float64 `json:"day_summary"`
+	Day           string  `json:"day"`
+	StressHigh    int     `json:"stress_high"`
+	RecoveryHigh  int     `json:"recovery_high"`
+	DaytimeStress float64 `json:"day_summary"`
 }
 
 type SpO2Response struct {
@@ -470,8 +635,8 @@ type SpO2Response struct {
 }
 
 type SpO2Record struct {
-	Day                string `json:"day"`
-	SpO2Percentage     struct {
+	Day            string `json:"day"`
+	SpO2Percentage struct {
 		Average float64 `json:"average"`
 	} `json:"spo2_percentage"`
 	BreathingDisturbanceIndex float64 `json:"breathing_disturbance_index"`
@@ -485,8 +650,8 @@ type ResilienceRecord struct {
 	Day          string `json:"day"`
 	Level        string `json:"level"`
 	Contributors struct {
-		SleepRecovery    float64 `json:"sleep_recovery"`
-		DaytimeRecovery  float64 `json:"daytime_recovery"`
+		SleepRecovery   float64 `json:"sleep_recovery"`
+		DaytimeRecovery float64 `json:"daytime_recovery"`
 	} `json:"contributors"`
 }
 
@@ -495,8 +660,8 @@ type VO2MaxResponse struct {
 }
 
 type VO2MaxRecord struct {
-	Day      string  `json:"day"`
-	VO2Max   float64 `json:"vo2_max"`
+	Day    string  `json:"day"`
+	VO2Max float64 `json:"vo2_max"`
 }
 
 type WorkoutResponse struct {
@@ -521,7 +686,7 @@ func fetchSleep(date string) {
 	targetDate, _ := time.Parse("2006-01-02", date)
 	startDate := targetDate.AddDate(0, 0, -1).Format("2006-01-02")
 	endDate := targetDate.AddDate(0, 0, 1).Format("2006-01-02")
-	
+
 	params := url.Values{}
 	params.Set("start_date", startDate)
 	params.Set("end_date", endDate)
@@ -557,12 +722,12 @@ func fetchSleep(date string) {
 			sleepRecords = append(sleepRecords, data.Data[i])
 		}
 	}
-	
+
 	if len(sleepRecords) == 0 && dailySleep == nil {
 		fmt.Println("No sleep data for", date)
 		return
 	}
-	
+
 	fmt.Printf("🌙 Sleep - %s\n", date)
 	fmt.Println(strings.Repeat("─", 40))
 
@@ -585,13 +750,13 @@ func fetchSleep(date string) {
 		bedEnd, _ := time.Parse(time.RFC3339, s.BedtimeEnd)
 		bedStart = bedStart.Local()
 		bedEnd = bedEnd.Local()
-		
+
 		// Label the sleep type
 		sleepLabel := "😴 Nap"
 		if s.Type == "long_sleep" {
 			sleepLabel = "🛏️  Main Sleep"
 		}
-		
+
 		if i > 0 {
 			fmt.Println()
 			fmt.Println(strings.Repeat("─", 40))
@@ -616,11 +781,76 @@ func fetchSleep(date string) {
 	}
 }
 
+func fetchHRV(date string) {
+	targetDate, err := time.Parse("2006-01-02", date)
+	startDate := date
+	endDate := date
+	if err == nil {
+		startDate = targetDate.AddDate(0, 0, -1).Format("2006-01-02")
+		endDate = targetDate.AddDate(0, 0, 1).Format("2006-01-02")
+	}
+
+	params := url.Values{}
+	params.Set("start_date", startDate)
+	params.Set("end_date", endDate)
+
+	body, err := apiGet("/sleep", params)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	var data SleepResponse
+	json.Unmarshal(body, &data)
+
+	// Collect all sleep records for this date.
+	var records []SleepRecord
+	for i := range data.Data {
+		if data.Data[i].Day == date {
+			records = append(records, data.Data[i])
+		}
+	}
+
+	if len(records) == 0 {
+		fmt.Println("No HRV data for", date)
+		return
+	}
+
+	fmt.Printf("💓 HRV - %s\n", date)
+	fmt.Println(strings.Repeat("─", 40))
+
+	for i, s := range records {
+		bedStart, _ := time.Parse(time.RFC3339, s.BedtimeStart)
+		bedEnd, _ := time.Parse(time.RFC3339, s.BedtimeEnd)
+		bedStart = bedStart.Local()
+		bedEnd = bedEnd.Local()
+
+		label := "😴 Nap"
+		if s.Type == "long_sleep" {
+			label = "🛏️  Main Sleep"
+		}
+
+		if i > 0 {
+			fmt.Println()
+		}
+
+		hrv := "n/a"
+		if s.AverageHRV > 0 {
+			hrv = fmt.Sprintf("%d ms", s.AverageHRV)
+		}
+
+		fmt.Printf("%s (%s → %s)\n", label, bedStart.Format("3:04 PM"), bedEnd.Format("3:04 PM"))
+		fmt.Printf("Average HRV:   %s\n", hrv)
+		fmt.Printf("Average HR:    %.0f bpm\n", s.AverageHeartRate)
+		fmt.Printf("Lowest HR:     %d bpm\n", s.LowestHeartRate)
+	}
+}
+
 func fetchReadiness(date string) {
 	targetDate, _ := time.Parse("2006-01-02", date)
 	startDate := targetDate.AddDate(0, 0, -1).Format("2006-01-02")
 	endDate := targetDate.AddDate(0, 0, 1).Format("2006-01-02")
-	
+
 	params := url.Values{}
 	params.Set("start_date", startDate)
 	params.Set("end_date", endDate)
@@ -641,7 +871,7 @@ func fetchReadiness(date string) {
 			break
 		}
 	}
-	
+
 	if r == nil {
 		fmt.Println("No readiness data for", date)
 		return
@@ -676,7 +906,7 @@ func fetchActivity(date string) {
 	targetDate, _ := time.Parse("2006-01-02", date)
 	startDate := targetDate.AddDate(0, 0, -1).Format("2006-01-02")
 	endDate := targetDate.AddDate(0, 0, 1).Format("2006-01-02")
-	
+
 	params := url.Values{}
 	params.Set("start_date", startDate)
 	params.Set("end_date", endDate)
@@ -697,12 +927,12 @@ func fetchActivity(date string) {
 			break
 		}
 	}
-	
+
 	if a == nil {
 		fmt.Println("No activity data for", date)
 		return
 	}
-	
+
 	fmt.Printf("🏃 Activity - %s\n", a.Day)
 	fmt.Println(strings.Repeat("─", 40))
 	fmt.Printf("Score:         %d\n", a.Score)
@@ -894,18 +1124,18 @@ func fetchWorkouts(date string) {
 		if i > 0 {
 			fmt.Println()
 		}
-		
+
 		startTime, _ := time.Parse(time.RFC3339, w.StartDatetime)
 		endTime, _ := time.Parse(time.RFC3339, w.EndDatetime)
 		startTime = startTime.Local()
 		endTime = endTime.Local()
 		duration := endTime.Sub(startTime)
-		
+
 		label := w.Activity
 		if w.Label != nil && *w.Label != "" {
 			label = *w.Label
 		}
-		
+
 		fmt.Printf("Activity:   %s\n", label)
 		fmt.Printf("Time:       %s (%s)\n", startTime.Format("3:04 PM"), formatDuration(int(duration.Seconds())))
 		fmt.Printf("Calories:   %.0f\n", w.Calories)
@@ -933,12 +1163,100 @@ func fetchAll(date string) {
 	fetchHeartRate(date)
 }
 
-func fetchJSON(date string) {
-	params := url.Values{}
-	params.Set("start_date", date)
-	params.Set("end_date", date)
+func writeJSONToStdout(v any) {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
 
-	endpoints := []string{
+func paddedDateRange(date string, beforeDays int, afterDays int) (startDate string, endDate string) {
+	t, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		// Keep behavior predictable even on bad input.
+		return date, date
+	}
+	startDate = t.AddDate(0, 0, -beforeDays).Format("2006-01-02")
+	endDate = t.AddDate(0, 0, afterDays).Format("2006-01-02")
+	return startDate, endDate
+}
+
+func fetchEndpointsJSON(command string, date string, startDate string, endDate string, endpoints []string) {
+	params := url.Values{}
+	params.Set("start_date", startDate)
+	params.Set("end_date", endDate)
+
+	out := JSONOutput{
+		Command:   command,
+		Date:      date,
+		StartDate: startDate,
+		EndDate:   endDate,
+		Endpoints: make(map[string]EndpointResult, len(endpoints)),
+	}
+
+	for _, ep := range endpoints {
+		name := strings.TrimPrefix(ep, "/")
+		body, err := apiGet(ep, params)
+		if err != nil {
+			out.Endpoints[name] = EndpointResult{Error: err.Error()}
+			continue
+		}
+		out.Endpoints[name] = EndpointResult{Data: json.RawMessage(body)}
+	}
+
+	writeJSONToStdout(out)
+}
+
+func fetchSleepJSON(date string) {
+	startDate, endDate := paddedDateRange(date, 1, 1)
+	fetchEndpointsJSON("sleep", date, startDate, endDate, []string{"/sleep", "/daily_sleep"})
+}
+
+func fetchActivityJSON(date string) {
+	startDate, endDate := paddedDateRange(date, 1, 1)
+	fetchEndpointsJSON("activity", date, startDate, endDate, []string{"/daily_activity"})
+}
+
+func fetchReadinessJSON(date string) {
+	startDate, endDate := paddedDateRange(date, 1, 1)
+	fetchEndpointsJSON("readiness", date, startDate, endDate, []string{"/daily_readiness"})
+}
+
+func fetchHeartRateJSON(date string) {
+	fetchEndpointsJSON("heartrate", date, date, date, []string{"/heartrate"})
+}
+
+func fetchHRVJSON(date string) {
+	startDate, endDate := paddedDateRange(date, 1, 1)
+	// HRV is primarily exposed via sleep; readiness can include HRV-related contributors.
+	fetchEndpointsJSON("hrv", date, startDate, endDate, []string{"/sleep", "/daily_sleep", "/daily_readiness"})
+}
+
+func fetchStressJSON(date string) {
+	fetchEndpointsJSON("stress", date, date, date, []string{"/daily_stress"})
+}
+
+func fetchSpO2JSON(date string) {
+	fetchEndpointsJSON("spo2", date, date, date, []string{"/daily_spo2"})
+}
+
+func fetchResilienceJSON(date string) {
+	fetchEndpointsJSON("resilience", date, date, date, []string{"/daily_resilience"})
+}
+
+func fetchVO2MaxJSON(date string) {
+	fetchEndpointsJSON("vo2", date, date, date, []string{"/vO2_max"})
+}
+
+func fetchWorkoutsJSON(date string) {
+	fetchEndpointsJSON("workout", date, date, date, []string{"/workout"})
+}
+
+func fetchAllJSON(date string) {
+	startDate, endDate := paddedDateRange(date, 1, 1)
+	fetchEndpointsJSON("all", date, startDate, endDate, []string{
 		"/sleep",
 		"/daily_sleep",
 		"/daily_activity",
@@ -949,21 +1267,7 @@ func fetchJSON(date string) {
 		"/daily_resilience",
 		"/vO2_max",
 		"/workout",
-	}
-	
-	result := make(map[string]json.RawMessage)
-	
-	for _, ep := range endpoints {
-		body, err := apiGet(ep, params)
-		if err != nil {
-			continue
-		}
-		name := strings.TrimPrefix(ep, "/")
-		result[name] = json.RawMessage(body)
-	}
-	
-	out, _ := json.MarshalIndent(result, "", "  ")
-	fmt.Println(string(out))
+	})
 }
 
 func formatDuration(seconds int) string {
